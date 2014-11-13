@@ -8,7 +8,7 @@ Created on Nov 12, 2014
 
 import sqlite3, math, time, sys
 import re
-from lib2to3.pgen2.grammar import opmap
+
 class Optimizer:
     dbConn = None
     dbCursor = None
@@ -17,17 +17,46 @@ class Optimizer:
     startTime = None
     originalTraversal = 0
     optimizedTraversal = 0
+
     deletedLines = 0
-    def progressBar(self, done, total, text=""):
+ 
+    
+    def gCodeEta(self, done, total, now, rateEstimate):
+        left = total-done
+        return (rateEstimate/left) * ((left*(left+1))/2)
+    
+    def dedupEta(self, done, total, now, rateEstimate):
+        return (rateEstimate/done) * ((total*(total+1)/2) - (done*(done+1)/2))
+        
+    def secToString(self, seconds):
+        output = ""
+        hours = int(seconds / (60*60))
+        if hours > 0:
+            output += str(hours) +"h"
+            seconds = seconds - (hours*(60*60))
+        minutes = int(seconds / (60))
+        if minutes > 0:
+            output += str(minutes) + "m"
+            seconds = seconds - (minutes*60)
+        output += str(int(seconds)) +"s"
+        return output
+        
+            
+    
+    def progressBar(self, done, total, text="", showRate=False, etaFunc=None, rateUnits="items/sec"):
     
         
         if done > total: 
             return
     
-        if self.startTime is None:
-            self.startTime = time.time()
         now = time.time()
-    
+        if self.startTime is None:
+            self.startTime = now
+            self.lastTime = now
+            self.singleRate = "??"
+            self.rateLastComputed = now
+            self.eta = 0
+            self.rateEstimate = None
         percent_done = float(done) / float(total)
     
         bar = int(math.floor(percent_done * 30))
@@ -44,21 +73,47 @@ class Optimizer:
 
         status_bar += "] "+ disp +"%  "+str(done)+"/"+str(total)
 
-        rate = (now-self.startTime)/done;
-        left = total - done;
-        eta = round(rate * left, 2)
-        
         elapsed = now - self.startTime;
+        rateEstimate = (now-self.lastTime)
+        if (elapsed < 0.5):  #Prime the rateEstimate
+            self.rateLastComputed = now
+            if (rateEstimate == 0):
+                pass
+            elif (self.rateEstimate is None):
+                
+                self.rateEstimate = rateEstimate
+            else:
+                self.rateEstimate = (rateEstimate*0.1) + (self.rateEstimate*0.9)
+                
+        elif ((now - self.rateLastComputed) > 0.5):  #Once the estimate is primed, start calculating eta.
+            self.rateLastComputed = now
+            rateEstimate = (now-self.lastTime)
+            if self.rateEstimate is None:
+                self.rateEstimate = rateEstimate
+            else:
+                self.rateEstimate = (rateEstimate*0.01) + (self.rateEstimate*0.99)
+            
+            if etaFunc is not None:
+                self.eta = etaFunc(done, total, now, self.rateEstimate)
+            else:
+                self.eta = self.rateEstimate * (total - done)
+             
+            self.singleRate = str(round(1 / (now - self.lastTime), 2))
+            
+        
 
-        status_bar += " remaining: " + str(int(eta)) + " sec.  elapsed: " + str(int(elapsed)) + " sec."
-
+        status_bar += " " + self.secToString(self.eta) +" remaining, " + self.secToString(elapsed) + " elapsed." 
+        
+        if (showRate):
+            status_bar += " ("+self.singleRate+" "+rateUnits+")"
+        status_bar += "      "
         sys.stdout.write(status_bar)
         sys.stdout.flush()
-        
+        self.lastTime = now
 
         if (done == total):
             print
-            self.start_time = None
+            self.startTime = None
         
     def getNumberAfterChar(self, line, character):
         matches = re.search(character+'([-+]?[0-9]*\.?[0-9]+)', line);
@@ -145,7 +200,10 @@ class Optimizer:
         for line in iter(inputf.readline, ''):
             line = line.rstrip()
             lineNum+=1
-            self.progressBar(lineNum, totalInputLines, "Loading GCode...\t\t")
+            if (deleteDuplicates):
+                self.progressBar(lineNum, totalInputLines, "Loading Gcode...\t\t", etaFunc=self.dedupEta)
+            else:
+                self.progressBar(lineNum, totalInputLines, "Loading GCode...\t\t")
             if len(line) == 0:
                 continue
             elif line[0] == 'G':
@@ -211,7 +269,7 @@ class Optimizer:
         
         while line is not None:
             processedLines += 1
-            self.progressBar(processedLines, totalLines, "Optimizing GCode...\t\t")
+            self.progressBar(processedLines, totalLines, "Optimizing GCode...\t\t", showRate=True, rateUnits="lines/sec", etaFunc=self.gCodeEta)
             start = (line['start_x'], line['start_y'])
             end = (line['end_x'], line['end_y'])
             if line['distance_start'] < line['distance_end']:

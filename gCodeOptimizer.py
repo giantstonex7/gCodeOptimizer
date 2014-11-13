@@ -17,7 +17,7 @@ class Optimizer:
     startTime = None
     originalTraversal = 0
     optimizedTraversal = 0
-    
+    deletedLines = 0
     def progressBar(self, done, total, text=""):
     
         
@@ -100,7 +100,17 @@ class Optimizer:
         if line is not None:
             self.dbCursor.execute('DELETE from lines where num = ?', (line['num'],))
         return line
-        
+    
+    def pointExists(self, point1, point2, feedRate, power):
+        self.dbCursor.execute('''
+            SELECT COUNT(*) FROM lines WHERE 
+                ((start_x = :x1 AND start_y = :y1 AND end_x = :x2 AND end_y = :y2) OR
+                (start_x = :x2 AND start_y = :y2 AND end_x = :x1 AND end_y = :y1)) AND
+                power = :power AND feedrate = :feedRate''', {"x1":point1[0], "y1": point1[1], "x2": point2[0], "y2": point2[1], "power": power, "feedRate": feedRate})
+        result = self.dbCursor.fetchone();
+        return result[0] > 0
+
+    
     def moveTo(self, location, feedRate, code="G1"):
         self.outputf.write(code + " X" + str(location[0]) + " Y" + str(location[1]) + " F" + str(feedRate) + "\n")
         
@@ -110,7 +120,7 @@ class Optimizer:
     def laserOff(self):
         self.outputf.write("M5\n")
         
-    def __init__(self, inFileName, outFileName, traversalRate):
+    def __init__(self, inFileName, outFileName, traversalRate, deleteDuplicates=False):
         self.dbConn = sqlite3.connect(':memory:')
         self.dbConn.row_factory = sqlite3.Row
         self.dbCursor = self.dbConn.cursor()
@@ -156,6 +166,11 @@ class Optimizer:
                          length, power, feedRate
                         ) 
                     if active:
+                        if deleteDuplicates:
+                            if self.pointExists(lastPosition, newPosition, feedRate, power):
+                                lastPosition = newPosition
+                                self.deletedLines += 1;
+                                continue
                         self.dbCursor.execute('''INSERT INTO lines VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', values)
                     else:
                         self.originalTraversal+=length
@@ -244,10 +259,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument("inputfile", help="Input GCode file to optimize")
 parser.add_argument('outputfile', help="File to write optimized code")
 parser.add_argument('-t', '--traversal', help="Traversal rate (defaults to 1000)", type=float, default=1000)
+parser.add_argument('-d', '--dedup', help="Delete duplicate lines", action="store_true")
 args = parser.parse_args()
 
-optmzr = Optimizer(args.inputfile, args.outputfile, args.traversal)
+optmzr = Optimizer(args.inputfile, args.outputfile, args.traversal, deleteDuplicates=args.dedup)
 print
+if (args.dedup):
+    print "Removed " + str(optmzr.deletedLines) + " duplicate lines."
 
 print "Original Traversal: " + str(round(optmzr.originalTraversal, 2)) + " ",
 print "Optimized Traversal: " + str(round(optmzr.optimizedTraversal, 2)) + " ",

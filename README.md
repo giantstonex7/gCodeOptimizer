@@ -8,7 +8,9 @@ processing time).
 
 Requires pysqlite2
  
-Note this code relies on M3/M5 being used to turn the laser on and off.
+Note this code relies on M3/M5 being used to turn the laser on and off and sections
+of code to be optimzed being tagged ("; Start of path" and "; End of Path" by 
+default).  Each section is optimized separately so that path orders can be preserved.
 
 python gCodeOptimizer.py --help
 

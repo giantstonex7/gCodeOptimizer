@@ -17,7 +17,7 @@ class Optimizer:
     startTime = None
     originalTraversal = 0
     optimizedTraversal = 0
-
+    lastPosition = (0,0)
     deletedLines = 0
  
     
@@ -175,7 +175,7 @@ class Optimizer:
     def laserOff(self):
         self.outputf.write("M5\n")
         
-    def __init__(self, inFileName, outFileName, traversalRate, deleteDuplicates=False):
+    def __init__(self, inFileName, outFileName, traversalRate, deleteDuplicates=False, sectionStartRegex="^; Start of path", sectionEndRegex="^; End of path"):
         self.dbConn = sqlite3.connect(':memory:')
         self.dbConn.row_factory = sqlite3.Row
         self.dbCursor = self.dbConn.cursor()
@@ -191,81 +191,90 @@ class Optimizer:
         inputf = open (inFileName, 'r')
         
         active = False
-        lastPosition = (0, 0)
+        self.lastPosition = (0, 0)
         power = 0
-        headerOpen = True
+        sectionOpen = False
         lineNum = 0
         feedRate = 100
-        self.lastUsefulLine = 0
+        
         for line in iter(inputf.readline, ''):
             line = line.rstrip()
             lineNum+=1
-            if (deleteDuplicates):
-                self.progressBar(lineNum, totalInputLines, "Loading Gcode...\t\t", etaFunc=self.dedupEta)
-            else:
-                self.progressBar(lineNum, totalInputLines, "Loading GCode...\t\t")
-            if len(line) == 0:
-                continue
-            elif line[0] == 'G':
-                codeNum = int(self.getNumberAfterChar(line, '^G'));
-                
-                if (codeNum == 0) or (codeNum == 1):
-                    headerOpen = False
-                    newPosition = self.getPosition(line)
-                    if newPosition is None:
-                        continue
-                    newFeedRate = float(self.getNumberAfterChar(line, 'F'))
-                    if newFeedRate:
-                        feedRate = newFeedRate
-                    length = self.getLength(lastPosition, newPosition)
-                    values = (lineNum,
-                         lastPosition[0], lastPosition[1],
-                         newPosition[0], newPosition[1],
-                         length, power, feedRate
-                        ) 
-                    if active:
-                        if deleteDuplicates:
-                            if self.pointExists(lastPosition, newPosition, feedRate, power):
-                                lastPosition = newPosition
-                                self.deletedLines += 1;
-                                continue
-                        self.dbCursor.execute('''INSERT INTO lines VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', values)
-                    else:
-                        self.originalTraversal+=length
+            if (re.search(sectionStartRegex, line)):
+                if (sectionOpen):
+                    self.processGCodeDatabase();
+                print "\nFound Section Open: "+line+ "\n"
+                self.outputf.write(line + "\n")
+                sectionOpen = True
+            elif (re.search(sectionEndRegex, line)):
+                self.processGCodeDatabase();
+                sectionOpen = False
+                self.outputf.write(line + "\n")
+                print "\nFound Section Close: "+line+ "\n"
+            elif (not sectionOpen):
+                self.outputf.write(line + "\n")
+            else:                   
+                if (deleteDuplicates):
+                    self.progressBar(lineNum, totalInputLines, "Loading Gcode...\t\t", etaFunc=self.dedupEta)
+                else:
+                    self.progressBar(lineNum, totalInputLines, "Loading GCode...\t\t")
+                if len(line) == 0:
+                    continue
+                elif line[0] == 'G':
+                    codeNum = int(self.getNumberAfterChar(line, '^G'));
+                    
+                    if (codeNum == 0) or (codeNum == 1):
+                        headerOpen = False
+                        newPosition = self.getPosition(line)
+                        if newPosition is None:
+                            continue
+                        newFeedRate = float(self.getNumberAfterChar(line, 'F'))
+                        if newFeedRate:
+                            feedRate = newFeedRate
+                        length = self.getLength(self.lastPosition, newPosition)
+                        values = (lineNum,
+                             self.lastPosition[0], self.lastPosition[1],
+                             newPosition[0], newPosition[1],
+                             length, power, feedRate
+                            ) 
+                        if active:
+                            if deleteDuplicates:
+                                if self.pointExists(self.lastPosition, newPosition, feedRate, power):
+                                    self.lastPosition = newPosition
+                                    self.deletedLines += 1;
+                                    continue
+                            self.dbCursor.execute('''INSERT INTO lines VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', values)
+                        else:
+                            self.originalTraversal+=length
+                            
                         
-                    self.lastUsefulLine = inputf.tell()
+                        
+                        self.lastPosition = newPosition
+                elif line[0] == 'M':
                     
-                    lastPosition = newPosition
-                elif headerOpen:
-                    self.outputf.write(line + "\n"); 
-            elif line[0] == 'M':
-                
-                codeNum = int(self.getNumberAfterChar(line, '^M'));
+                    codeNum = int(self.getNumberAfterChar(line, '^M'));
+                        
+                    if (codeNum == 3):
+                        newPower = float(self.getNumberAfterChar(line, 'S'))
+                        if newPower is not False:
+                            power = newPower
+                        active = True
+                    elif codeNum == 5:
+                        active = False
                     
-                if (codeNum == 3):
-                    headerOpen = False
-                    newPower = float(self.getNumberAfterChar(line, 'S'))
-                    if newPower is not False:
-                        power = newPower
-                    active = True
-                    self.lastUsefulLine = inputf.tell()    
-                elif codeNum == 5:
-                    headerOpen = False
-                    active = False
-                    self.lastUsefulLine = inputf.tell()    
-                elif headerOpen:
-                    self.outputf.write(line + "\n");
-            elif headerOpen:
-                self.outputf.write(line + "\n");   
        
         inputf.close()
+
+        self.processGCodeDatabase()
+        self.outputf.close()   
+            
         
-        lastPosition = (0, 0)
+    def processGCodeDatabase(self):
         active = False
         power = 0
         processedLines = 0
         totalLines = self.getLinesCount()
-        line = self.getNearest(lastPosition)
+        line = self.getNearest(self.lastPosition)
         
         while line is not None:
             processedLines += 1
@@ -274,20 +283,20 @@ class Optimizer:
             end = (line['end_x'], line['end_y'])
             if line['distance_start'] < line['distance_end']:
                 
-                if not self.isCoincident(lastPosition, start):
+                if not self.isCoincident(self.lastPosition, start):
                     self.laserOff();
                     active = False
-                    self.optimizedTraversal += self.getLength(lastPosition, start)
+                    self.optimizedTraversal += self.getLength(self.lastPosition, start)
                     self.moveTo(start, self.traversalRate, "G0");
                 if (active is False) or power != line['power']:
                     power = line['power']
                     self.laserOn(power)
                     active = True
                 self.moveTo(end, line['feedRate'])
-                lastPosition = end
+                self.lastPosition = end
             else:
-                if not self.isCoincident(lastPosition, end):
-                    self.optimizedTraversal += self.getLength(lastPosition, end)
+                if not self.isCoincident(self.lastPosition, end):
+                    self.optimizedTraversal += self.getLength(self.lastPosition, end)
                     self.laserOff();
                     active = False
                     self.moveTo(end, self.traversalRate, "G0");
@@ -296,19 +305,11 @@ class Optimizer:
                     active = True
                     self.laserOn(power)
                 self.moveTo(start, line['feedRate'])
-                lastPosition = start    
+                self.lastPosition = start    
             
-            line = self.getNearest(lastPosition)
+            line = self.getNearest(self.lastPosition)
+     
          
-         
-        #Write the Footer
-        inputf = open(inFileName, "r")
-        inputf.seek(self.lastUsefulLine)
-        for line in iter(inputf.readline, ''):
-            self.outputf.write(line)
-            
-        self.outputf.close()   
-            
 
 import argparse
 
@@ -318,9 +319,11 @@ parser.add_argument("inputfile", help="Input GCode file to optimize")
 parser.add_argument('outputfile', help="File to write optimized code")
 parser.add_argument('-t', '--traversal', help="Traversal rate (defaults to 1000)", type=float, default=1000)
 parser.add_argument('-d', '--dedup', help="Delete duplicate lines", action="store_true")
+parser.add_argument('--section-start', help="Section start regex", type=string, default="^; Start of path")
+parser.add_argument('--section-end', help="Section start regex", type=string, default="^; End of path")
 args = parser.parse_args()
 
-optmzr = Optimizer(args.inputfile, args.outputfile, args.traversal, deleteDuplicates=args.dedup)
+optmzr = Optimizer(args.inputfile, args.outputfile, args.traversal, deleteDuplicates=args.dedup, sectionStartRegex=args.section_start, sectionEndRegex=args.section_end)
 print
 if (args.dedup):
     print "Removed " + str(optmzr.deletedLines) + " duplicate lines."

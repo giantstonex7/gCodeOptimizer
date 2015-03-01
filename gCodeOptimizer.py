@@ -185,6 +185,7 @@ class Optimizer:
              length DOUBLE, power DOUBLE, feedrate DOUBLE);''')
         
         inputf = open (inFileName, 'r')
+        self.sectionFound = False
         self.outputf = open(outFileName, 'w')
         with inputf:
             totalInputLines = sum(1 for _ in inputf)
@@ -206,6 +207,7 @@ class Optimizer:
                 print "\nFound Section Open: "+line+ "\n"
                 self.outputf.write(line + "\n")
                 sectionOpen = True
+                self.sectionFound = True
             elif (re.search(sectionEndRegex, line)):
                 self.processGCodeDatabase();
                 sectionOpen = False
@@ -319,17 +321,20 @@ parser.add_argument("inputfile", help="Input GCode file to optimize")
 parser.add_argument('outputfile', help="File to write optimized code")
 parser.add_argument('-t', '--traversal', help="Traversal rate (defaults to 1000)", type=float, default=1000)
 parser.add_argument('-d', '--dedup', help="Delete duplicate lines", action="store_true")
-parser.add_argument('--section-start', help="Section start regex", type=string, default="^; Start of path")
-parser.add_argument('--section-end', help="Section start regex", type=string, default="^; End of path")
+parser.add_argument('--section-start', help="Section start regex", default="^; Start of path")
+parser.add_argument('--section-end', help="Section start regex", default="^; End of path")
 args = parser.parse_args()
 
 optmzr = Optimizer(args.inputfile, args.outputfile, args.traversal, deleteDuplicates=args.dedup, sectionStartRegex=args.section_start, sectionEndRegex=args.section_end)
 print
-if (args.dedup):
-    print "Removed " + str(optmzr.deletedLines) + " duplicate lines."
-
-print "Original Traversal: " + str(round(optmzr.originalTraversal, 2)) + " ",
-print "Optimized Traversal: " + str(round(optmzr.optimizedTraversal, 2)) + " ",
-print "(" + str(round((optmzr.optimizedTraversal/optmzr.originalTraversal)*100, 2))+ "%)"
+if (optmzr.sectionFound):
+    if (args.dedup):
+        print "Removed " + str(optmzr.deletedLines) + " duplicate lines."
+    
+    print "Original Traversal: " + str(round(optmzr.originalTraversal, 2)) + " ",
+    print "Optimized Traversal: " + str(round(optmzr.optimizedTraversal, 2)) + " ",
+    print "(" + str(round((optmzr.optimizedTraversal/optmzr.originalTraversal)*100, 2))+ "%)"
+else:
+    print "WARNING: No optimizing sections found.  Use --section-start and --section-end to define section markers. "
 
 
